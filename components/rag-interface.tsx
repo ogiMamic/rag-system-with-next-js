@@ -22,6 +22,8 @@ import {
   ChevronDown,
   Sparkles,
   BookOpen,
+  Square,
+  CheckSquare,
 } from "lucide-react"
 import { extractTextFromFile, validateFileSize } from "@/lib/rag/text-extraction-client"
 
@@ -56,11 +58,30 @@ export function RAGInterface() {
   const [loadingDocuments, setLoadingDocuments] = useState(true)
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
+  const [selectedDocuments, setSelectedDocuments] = useState<Set<string>>(new Set())
+  const [deletingMultiple, setDeletingMultiple] = useState(false)
+  const [deleteMessage, setDeleteMessage] = useState<{ type: "success" | "error"; text: string } | null>(null)
+
   const [expandedSources, setExpandedSources] = useState<Set<number>>(new Set())
 
   useEffect(() => {
     fetchDocuments()
   }, [])
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "a") {
+        const documentsTab = document.querySelector('[data-state="active"][value="knowledge"]')
+        if (documentsTab && documents.length > 0) {
+          e.preventDefault()
+          setSelectedDocuments(new Set(documents.map((d) => d.id)))
+        }
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [documents])
 
   const fetchDocuments = async () => {
     try {
@@ -192,6 +213,73 @@ export function RAGInterface() {
     if (percent >= 70) return "bg-green-100 text-green-700 border-green-200"
     if (percent >= 50) return "bg-yellow-100 text-yellow-700 border-yellow-200"
     return "bg-slate-100 text-slate-700 border-slate-200"
+  }
+
+  const toggleSelectDocument = (documentId: string) => {
+    const newSelected = new Set(selectedDocuments)
+    if (newSelected.has(documentId)) {
+      newSelected.delete(documentId)
+    } else {
+      newSelected.add(documentId)
+    }
+    setSelectedDocuments(newSelected)
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedDocuments.size === documents.length) {
+      setSelectedDocuments(new Set())
+    } else {
+      setSelectedDocuments(new Set(documents.map((d) => d.id)))
+    }
+  }
+
+  const handleDeleteMultiple = async () => {
+    if (selectedDocuments.size === 0) return
+
+    const count = selectedDocuments.size
+    if (!confirm(`Möchten Sie wirklich ${count} Dokument${count > 1 ? "e" : ""} löschen?`)) return
+
+    setDeletingMultiple(true)
+    setDeleteMessage(null)
+
+    try {
+      let successCount = 0
+      let failCount = 0
+
+      for (const documentId of selectedDocuments) {
+        try {
+          const response = await fetch(`/api/documents/${documentId}`, { method: "DELETE" })
+          if (response.ok) {
+            successCount++
+          } else {
+            failCount++
+          }
+        } catch {
+          failCount++
+        }
+      }
+
+      setSelectedDocuments(new Set())
+      await fetchDocuments()
+
+      if (failCount === 0) {
+        setDeleteMessage({
+          type: "success",
+          text: `${successCount} Dokument${successCount > 1 ? "e" : ""} erfolgreich gelöscht`,
+        })
+      } else {
+        setDeleteMessage({
+          type: "error",
+          text: `${successCount} gelöscht, ${failCount} fehlgeschlagen`,
+        })
+      }
+
+      setTimeout(() => setDeleteMessage(null), 3000)
+    } catch (error) {
+      setDeleteMessage({ type: "error", text: "Löschen fehlgeschlagen" })
+    } finally {
+      setDeletingMultiple(false)
+    }
   }
 
   return (
@@ -416,11 +504,59 @@ export function RAGInterface() {
           <TabsContent value="knowledge" className="mt-6">
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-lg text-slate-900">Wissensbasis</h3>
-                <Button variant="outline" size="sm" onClick={fetchDocuments} disabled={loadingDocuments}>
-                  {loadingDocuments ? <Loader2 className="h-4 w-4 animate-spin" /> : "Aktualisieren"}
-                </Button>
+                <div className="flex items-center gap-4">
+                  <h3 className="font-semibold text-lg text-slate-900">Wissensbasis</h3>
+                  {documents.length > 0 && (
+                    <button
+                      onClick={toggleSelectAll}
+                      className="flex items-center gap-2 text-sm text-slate-600 hover:text-blue-600 transition-colors"
+                    >
+                      {selectedDocuments.size === documents.length ? (
+                        <CheckSquare className="h-5 w-5 text-blue-600" />
+                      ) : (
+                        <Square className="h-5 w-5" />
+                      )}
+                      <span>Alle auswählen</span>
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {selectedDocuments.size > 0 && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={handleDeleteMultiple}
+                      disabled={deletingMultiple}
+                      className="gap-2"
+                    >
+                      {deletingMultiple ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                      Ausgewählte löschen ({selectedDocuments.size})
+                    </Button>
+                  )}
+                  <Button variant="outline" size="sm" onClick={fetchDocuments} disabled={loadingDocuments}>
+                    {loadingDocuments ? <Loader2 className="h-4 w-4 animate-spin" /> : "Aktualisieren"}
+                  </Button>
+                </div>
               </div>
+
+              {deleteMessage && (
+                <div
+                  className={`rounded-lg p-3 border ${
+                    deleteMessage.type === "success"
+                      ? "bg-green-50 border-green-200 text-green-700"
+                      : "bg-red-50 border-red-200 text-red-700"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    {deleteMessage.type === "success" ? (
+                      <CheckCircle className="h-4 w-4" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4" />
+                    )}
+                    <span className="text-sm font-medium">{deleteMessage.text}</span>
+                  </div>
+                </div>
+              )}
 
               {loadingDocuments ? (
                 <div className="flex justify-center py-12">
@@ -437,9 +573,27 @@ export function RAGInterface() {
                   {documents.map((doc) => (
                     <div
                       key={doc.id}
-                      className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-4 hover:shadow-md transition-shadow"
+                      className={`flex items-center justify-between rounded-xl border p-4 transition-all cursor-pointer ${
+                        selectedDocuments.has(doc.id)
+                          ? "border-blue-400 bg-blue-50 shadow-sm"
+                          : "border-slate-200 bg-white hover:shadow-md"
+                      }`}
+                      onClick={() => toggleSelectDocument(doc.id)}
                     >
                       <div className="flex items-center gap-4">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            toggleSelectDocument(doc.id)
+                          }}
+                          className="flex-shrink-0 hover:scale-110 transition-transform"
+                        >
+                          {selectedDocuments.has(doc.id) ? (
+                            <CheckSquare className="h-6 w-6 text-blue-600" />
+                          ) : (
+                            <Square className="h-6 w-6 text-slate-400 hover:text-slate-600" />
+                          )}
+                        </button>
                         <div className="p-3 bg-blue-50 rounded-lg">
                           <FileText className="h-6 w-6 text-blue-600" />
                         </div>
@@ -455,7 +609,10 @@ export function RAGInterface() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => handleDelete(doc.id)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleDelete(doc.id)
+                        }}
                         disabled={deletingId === doc.id}
                         className="text-red-600 hover:bg-red-50 hover:text-red-700"
                       >
@@ -468,6 +625,10 @@ export function RAGInterface() {
                     </div>
                   ))}
                 </div>
+              )}
+
+              {documents.length > 0 && (
+                <p className="text-xs text-slate-400 text-center mt-4">Tipp: Strg+A zum Auswählen aller Dokumente</p>
               )}
             </div>
           </TabsContent>
