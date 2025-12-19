@@ -1,14 +1,14 @@
 /**
  * Split text into chunks for better retrieval
  * OpenAI text-embedding-3-small has a limit of 8192 tokens
- * We use ~1500 characters per chunk to stay well under the limit
+ * We use ~1000 characters per chunk to stay well under the limit
  */
 export interface Chunk {
   text: string
   index: number
 }
 
-export function chunkText(text: string, chunkSize = 1500, overlap = 200): Chunk[] {
+export function chunkText(text: string, chunkSize = 1000, overlap = 200): Chunk[] {
   const chunks: Chunk[] = []
 
   // Split by characters instead of words to have better control over size
