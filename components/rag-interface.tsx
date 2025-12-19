@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -9,16 +8,30 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Upload, MessageSquare, Loader2, FileText, CheckCircle, File, Trash2, Database } from "lucide-react"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import {
+  Upload,
+  MessageSquare,
+  Loader2,
+  FileText,
+  CheckCircle,
+  File,
+  Trash2,
+  Database,
+  AlertCircle,
+  ChevronDown,
+  Sparkles,
+  BookOpen,
+} from "lucide-react"
 import { extractTextFromFile, validateFileSize } from "@/lib/rag/text-extraction-client"
 
 interface QueryResult {
   answer: string
   sources: Array<{
+    document_title: string
     chunk_text: string
-    documents?: { title: string }
+    similarity: string
   }>
-  note?: string
 }
 
 interface Document {
@@ -31,17 +44,19 @@ interface Document {
 
 export function RAGInterface() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [customPrompt, setCustomPrompt] = useState("")
   const [uploading, setUploading] = useState(false)
-  const [uploadSuccess, setUploadSuccess] = useState(false)
+  const [uploadMessage, setUploadMessage] = useState<{ type: "success" | "error"; text: string } | null>(null)
 
   const [question, setQuestion] = useState("")
   const [querying, setQuerying] = useState(false)
   const [result, setResult] = useState<QueryResult | null>(null)
+  const [queryError, setQueryError] = useState<string | null>(null)
 
   const [documents, setDocuments] = useState<Document[]>([])
   const [loadingDocuments, setLoadingDocuments] = useState(true)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  const [expandedSources, setExpandedSources] = useState<Set<number>>(new Set())
 
   useEffect(() => {
     fetchDocuments()
@@ -51,11 +66,12 @@ export function RAGInterface() {
     try {
       setLoadingDocuments(true)
       const response = await fetch("/api/documents")
-      if (!response.ok) throw new Error("Failed to fetch documents")
-      const data = await response.json()
-      setDocuments(data.documents || [])
+      if (response.ok) {
+        const data = await response.json()
+        setDocuments(data.documents || [])
+      }
     } catch (error) {
-      console.error("[v0] Fetch documents error:", error)
+      console.error("Fetch documents error:", error)
     } finally {
       setLoadingDocuments(false)
     }
@@ -66,17 +82,12 @@ export function RAGInterface() {
 
     try {
       setDeletingId(documentId)
-      const response = await fetch(`/api/documents/${documentId}`, {
-        method: "DELETE",
-      })
-
-      if (!response.ok) throw new Error("Delete failed")
-
-      // Refresh documents list
-      await fetchDocuments()
+      const response = await fetch(`/api/documents/${documentId}`, { method: "DELETE" })
+      if (response.ok) {
+        await fetchDocuments()
+      }
     } catch (error) {
-      console.error("[v0] Delete error:", error)
-      alert("Fehler beim Löschen des Dokuments")
+      console.error("Delete error:", error)
     } finally {
       setDeletingId(null)
     }
@@ -87,21 +98,17 @@ export function RAGInterface() {
     if (!selectedFile) return
 
     setUploading(true)
-    setUploadSuccess(false)
+    setUploadMessage(null)
 
     try {
       if (!validateFileSize(selectedFile, 10)) {
         throw new Error("Datei zu groß. Maximum 10MB erlaubt.")
       }
 
-      console.log("[v0] Starting file upload:", selectedFile.name)
-      console.log("[v0] Extracting text from file...")
-
       const extractedText = await extractTextFromFile(selectedFile)
-      console.log("[v0] Extracted text length:", extractedText.length)
 
-      if (extractedText.length < 10) {
-        throw new Error("Dokument ist zu kurz oder leer")
+      if (extractedText.length < 50) {
+        throw new Error("Dokument ist zu kurz oder konnte nicht gelesen werden")
       }
 
       const response = await fetch("/api/documents/upload", {
@@ -111,38 +118,30 @@ export function RAGInterface() {
           title: selectedFile.name,
           content: extractedText,
           fileType: selectedFile.type || "text/plain",
-          customPrompt: customPrompt.trim() || undefined,
         }),
       })
 
-      console.log("[v0] Upload response status:", response.status)
-
-      const contentType = response.headers.get("content-type")
-      if (!contentType?.includes("application/json")) {
-        throw new Error("Server hat keine gültige JSON-Antwort zurückgegeben")
-      }
-
       const data = await response.json()
-      console.log("[v0] Upload response data:", data)
 
       if (!response.ok) {
-        throw new Error(data.error || "Upload failed")
+        throw new Error(data.error || "Upload fehlgeschlagen")
       }
 
-      setUploadSuccess(true)
+      setUploadMessage({
+        type: "success",
+        text: `Erfolgreich! "${selectedFile.name}" wurde mit ${data.chunks} Chunks verarbeitet.`,
+      })
       setSelectedFile(null)
-      setCustomPrompt("")
 
-      // Reset file input
-      const fileInput = document.getElementById("file-upload") as HTMLInputElement
-      if (fileInput) fileInput.value = ""
+      const input = document.getElementById("file-upload") as HTMLInputElement
+      if (input) input.value = ""
 
       await fetchDocuments()
-
-      setTimeout(() => setUploadSuccess(false), 3000)
     } catch (error) {
-      console.error("[v0] Upload error:", error)
-      alert(error instanceof Error ? error.message : "Fehler beim Hochladen des Dokuments")
+      setUploadMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Upload fehlgeschlagen",
+      })
     } finally {
       setUploading(false)
     }
@@ -150,8 +149,12 @@ export function RAGInterface() {
 
   const handleQuery = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!question.trim()) return
+
     setQuerying(true)
     setResult(null)
+    setQueryError(null)
+    setExpandedSources(new Set())
 
     try {
       const response = await fetch("/api/query", {
@@ -160,54 +163,80 @@ export function RAGInterface() {
         body: JSON.stringify({ question }),
       })
 
-      if (!response.ok) throw new Error("Query failed")
-
       const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || "Abfrage fehlgeschlagen")
+      }
+
       setResult(data)
     } catch (error) {
-      console.error("[v0] Query error:", error)
-      alert("Fehler bei der Abfrage")
+      setQueryError(error instanceof Error ? error.message : "Abfrage fehlgeschlagen")
     } finally {
       setQuerying(false)
     }
   }
 
+  const toggleSource = (index: number) => {
+    const newExpanded = new Set(expandedSources)
+    if (newExpanded.has(index)) {
+      newExpanded.delete(index)
+    } else {
+      newExpanded.add(index)
+    }
+    setExpandedSources(newExpanded)
+  }
+
+  const getSimilarityColor = (similarity: string) => {
+    const percent = Number.parseInt(similarity)
+    if (percent >= 70) return "bg-green-100 text-green-700 border-green-200"
+    if (percent >= 50) return "bg-yellow-100 text-yellow-700 border-yellow-200"
+    return "bg-slate-100 text-slate-700 border-slate-200"
+  }
+
   return (
-    <Card className="border-slate-200 shadow-lg">
-      <CardHeader className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
-        <CardTitle className="flex items-center gap-2">
-          <FileText className="h-6 w-6" />
-          RAG System Interface
+    <Card className="border-0 shadow-xl bg-white/80 backdrop-blur">
+      <CardHeader className="bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 text-white rounded-t-lg">
+        <CardTitle className="flex items-center gap-3 text-2xl">
+          <div className="p-2 bg-white/20 rounded-lg">
+            <Sparkles className="h-6 w-6" />
+          </div>
+          RAG Document Intelligence
         </CardTitle>
-        <CardDescription className="text-blue-50">Dokumente hochladen und intelligente Fragen stellen</CardDescription>
+        <CardDescription className="text-blue-100">
+          Laden Sie Dokumente hoch und stellen Sie intelligente Fragen
+        </CardDescription>
       </CardHeader>
       <CardContent className="p-6">
         <Tabs defaultValue="query" className="w-full">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="query" className="gap-2">
+          <TabsList className="grid w-full grid-cols-3 bg-slate-100">
+            <TabsTrigger value="query" className="gap-2 data-[state=active]:bg-white">
               <MessageSquare className="h-4 w-4" />
-              Fragen stellen
+              Fragen
             </TabsTrigger>
-            <TabsTrigger value="upload" className="gap-2">
+            <TabsTrigger value="upload" className="gap-2 data-[state=active]:bg-white">
               <Upload className="h-4 w-4" />
-              Dokument hochladen
+              Upload
             </TabsTrigger>
-            <TabsTrigger value="knowledge" className="gap-2">
+            <TabsTrigger value="knowledge" className="gap-2 data-[state=active]:bg-white">
               <Database className="h-4 w-4" />
-              Wissensbasis
+              Dokumente ({documents.length})
             </TabsTrigger>
           </TabsList>
 
+          {/* Query Tab */}
           <TabsContent value="query" className="mt-6">
             <form onSubmit={handleQuery} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="question">Ihre Frage</Label>
+                <Label htmlFor="question" className="text-base font-semibold">
+                  Ihre Frage
+                </Label>
                 <Textarea
                   id="question"
-                  placeholder="z.B. Was sind die Hauptthemen in den Dokumenten?"
+                  placeholder="z.B. Was sind die Hauptqualifikationen des Bewerbers? Welche Berufserfahrung hat die Person?"
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
-                  className="min-h-24 resize-none"
+                  className="min-h-28 text-base resize-none border-slate-200 focus:border-blue-500"
                   required
                 />
               </div>
@@ -215,38 +244,88 @@ export function RAGInterface() {
               <Button
                 type="submit"
                 disabled={querying || !question.trim()}
-                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+                className="w-full h-12 text-base bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
               >
                 {querying ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Suche Antwort...
+                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                    Analysiere Dokumente...
                   </>
                 ) : (
                   <>
-                    <MessageSquare className="mr-2 h-4 w-4" />
+                    <Sparkles className="mr-2 h-5 w-5" />
                     Frage stellen
                   </>
                 )}
               </Button>
             </form>
 
+            {/* Query Error */}
+            {queryError && (
+              <div className="mt-6 rounded-xl bg-red-50 border border-red-200 p-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-red-100 rounded-lg">
+                    <AlertCircle className="h-5 w-5 text-red-600" />
+                  </div>
+                  <span className="text-red-700 font-medium">{queryError}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Query Result - Improved answer display */}
             {result && (
               <div className="mt-6 space-y-4">
-                <div className="rounded-lg bg-blue-50 p-4">
-                  <h3 className="mb-2 font-semibold text-blue-900">Antwort:</h3>
-                  <p className="text-pretty text-slate-700">{result.answer}</p>
-                  {result.note && <p className="mt-2 text-sm text-amber-600">{result.note}</p>}
+                {/* Answer Card */}
+                <div className="rounded-xl bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 p-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="p-2 bg-blue-100 rounded-lg">
+                      <Sparkles className="h-5 w-5 text-blue-600" />
+                    </div>
+                    <h3 className="font-bold text-lg text-blue-900">KI-Antwort</h3>
+                  </div>
+                  <div className="prose prose-slate max-w-none">
+                    <p className="whitespace-pre-wrap text-slate-700 leading-relaxed">{result.answer}</p>
+                  </div>
                 </div>
 
+                {/* Sources - Expandable source cards */}
                 {result.sources && result.sources.length > 0 && (
-                  <div className="space-y-2">
-                    <h4 className="font-semibold text-slate-700">Quellen:</h4>
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <BookOpen className="h-5 w-5 text-slate-600" />
+                      <h4 className="font-semibold text-slate-700">Verwendete Quellen ({result.sources.length})</h4>
+                    </div>
+
                     {result.sources.map((source, idx) => (
-                      <div key={idx} className="rounded border border-slate-200 bg-slate-50 p-3 text-sm">
-                        <p className="font-medium text-slate-900">{source.documents?.title || "Dokument"}</p>
-                        <p className="mt-1 text-slate-600 line-clamp-2">{source.chunk_text}</p>
-                      </div>
+                      <Collapsible key={idx} open={expandedSources.has(idx)} onOpenChange={() => toggleSource(idx)}>
+                        <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+                          <CollapsibleTrigger className="w-full">
+                            <div className="flex items-center justify-between p-4 hover:bg-slate-50 transition-colors">
+                              <div className="flex items-center gap-3">
+                                <FileText className="h-5 w-5 text-blue-600" />
+                                <span className="font-medium text-slate-900">{source.document_title}</span>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <span
+                                  className={`px-3 py-1 rounded-full text-xs font-semibold border ${getSimilarityColor(source.similarity)}`}
+                                >
+                                  {source.similarity} Relevanz
+                                </span>
+                                <ChevronDown
+                                  className={`h-5 w-5 text-slate-400 transition-transform ${expandedSources.has(idx) ? "rotate-180" : ""}`}
+                                />
+                              </div>
+                            </div>
+                          </CollapsibleTrigger>
+                          <CollapsibleContent>
+                            <div className="px-4 pb-4 pt-0">
+                              <div className="bg-slate-50 rounded-lg p-4 text-sm text-slate-600 leading-relaxed">
+                                {source.chunk_text}
+                              </div>
+                            </div>
+                          </CollapsibleContent>
+                        </div>
+                      </Collapsible>
                     ))}
                   </div>
                 )}
@@ -254,103 +333,123 @@ export function RAGInterface() {
             )}
           </TabsContent>
 
+          {/* Upload Tab */}
           <TabsContent value="upload" className="mt-6">
             <form onSubmit={handleFileUpload} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="file-upload">Datei auswählen</Label>
-                <div className="flex items-center gap-4">
+                <Label htmlFor="file-upload" className="text-base font-semibold">
+                  Datei auswählen
+                </Label>
+                <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 hover:border-blue-400 transition-colors">
                   <Input
                     id="file-upload"
                     type="file"
                     accept=".txt,.pdf,.md,.json,.csv"
-                    onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                    className="flex-1"
+                    onChange={(e) => {
+                      setSelectedFile(e.target.files?.[0] || null)
+                      setUploadMessage(null)
+                    }}
+                    className="border-0 p-0"
                     required
                   />
-                  {selectedFile && (
-                    <div className="flex items-center gap-2 rounded-md bg-slate-100 px-3 py-2">
-                      <File className="h-4 w-4 text-slate-600" />
-                      <span className="text-sm text-slate-700">{selectedFile.name}</span>
-                    </div>
-                  )}
+                  <p className="text-sm text-slate-500 mt-2">
+                    Unterstützte Formate: PDF, TXT, MD, JSON, CSV (max. 10MB)
+                  </p>
                 </div>
-                <p className="text-sm text-slate-500">Unterstützte Formate: TXT, PDF, MD, JSON, CSV (max. 10MB)</p>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="custom-prompt">Spezielle Anweisungen (Optional)</Label>
-                <Textarea
-                  id="custom-prompt"
-                  placeholder="z.B. Extrahiere nur technische Informationen, Fokussiere auf Arbeitserfahrung, etc."
-                  value={customPrompt}
-                  onChange={(e) => setCustomPrompt(e.target.value)}
-                  className="min-h-20 resize-none"
-                />
-                <p className="text-sm text-slate-500">
-                  Geben Sie spezifische Anweisungen, wie das Dokument verarbeitet werden soll
-                </p>
-              </div>
+              {selectedFile && (
+                <div className="flex items-center gap-3 rounded-lg bg-blue-50 border border-blue-200 px-4 py-3">
+                  <File className="h-5 w-5 text-blue-600" />
+                  <div>
+                    <span className="font-medium text-slate-900">{selectedFile.name}</span>
+                    <span className="text-sm text-slate-500 ml-2">({(selectedFile.size / 1024).toFixed(1)} KB)</span>
+                  </div>
+                </div>
+              )}
 
               <Button
                 type="submit"
                 disabled={uploading || !selectedFile}
-                className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
+                className="w-full h-12 text-base bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700"
               >
                 {uploading ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Wird hochgeladen...
-                  </>
-                ) : uploadSuccess ? (
-                  <>
-                    <CheckCircle className="mr-2 h-4 w-4" />
-                    Erfolgreich hochgeladen!
+                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                    Verarbeite Dokument...
                   </>
                 ) : (
                   <>
-                    <Upload className="mr-2 h-4 w-4" />
-                    Dokument hochladen
+                    <Upload className="mr-2 h-5 w-5" />
+                    Dokument hochladen & analysieren
                   </>
                 )}
               </Button>
+
+              {/* Upload Message - Improved styling */}
+              {uploadMessage && (
+                <div
+                  className={`rounded-xl p-4 border ${
+                    uploadMessage.type === "success" ? "bg-green-50 border-green-200" : "bg-red-50 border-red-200"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={`p-2 rounded-lg ${uploadMessage.type === "success" ? "bg-green-100" : "bg-red-100"}`}
+                    >
+                      {uploadMessage.type === "success" ? (
+                        <CheckCircle className="h-5 w-5 text-green-600" />
+                      ) : (
+                        <AlertCircle className="h-5 w-5 text-red-600" />
+                      )}
+                    </div>
+                    <span className={uploadMessage.type === "success" ? "text-green-700" : "text-red-700"}>
+                      {uploadMessage.text}
+                    </span>
+                  </div>
+                </div>
+              )}
             </form>
           </TabsContent>
 
+          {/* Documents Tab */}
           <TabsContent value="knowledge" className="mt-6">
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-slate-900">Hochgeladene Dokumente</h3>
+                <h3 className="font-semibold text-lg text-slate-900">Wissensbasis</h3>
                 <Button variant="outline" size="sm" onClick={fetchDocuments} disabled={loadingDocuments}>
                   {loadingDocuments ? <Loader2 className="h-4 w-4 animate-spin" /> : "Aktualisieren"}
                 </Button>
               </div>
 
               {loadingDocuments ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
+                <div className="flex justify-center py-12">
+                  <Loader2 className="h-10 w-10 animate-spin text-blue-500" />
                 </div>
               ) : documents.length === 0 ? (
-                <div className="rounded-lg border-2 border-dashed border-slate-200 p-8 text-center">
-                  <Database className="mx-auto h-12 w-12 text-slate-400" />
-                  <p className="mt-2 text-sm text-slate-600">Keine Dokumente vorhanden</p>
-                  <p className="text-xs text-slate-500">Laden Sie Ihr erstes Dokument hoch, um zu beginnen</p>
+                <div className="rounded-xl border-2 border-dashed border-slate-200 p-12 text-center">
+                  <Database className="mx-auto h-16 w-16 text-slate-300" />
+                  <p className="mt-4 text-lg font-medium text-slate-600">Keine Dokumente vorhanden</p>
+                  <p className="text-sm text-slate-400 mt-1">Laden Sie Ihr erstes Dokument hoch</p>
                 </div>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   {documents.map((doc) => (
                     <div
                       key={doc.id}
-                      className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-4 transition-colors hover:bg-slate-50"
+                      className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-4 hover:shadow-md transition-shadow"
                     >
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <FileText className="h-5 w-5 text-blue-600" />
-                          <h4 className="font-medium text-slate-900">{doc.title}</h4>
+                      <div className="flex items-center gap-4">
+                        <div className="p-3 bg-blue-50 rounded-lg">
+                          <FileText className="h-6 w-6 text-blue-600" />
                         </div>
-                        <div className="mt-1 flex items-center gap-4 text-sm text-slate-500">
-                          <span>{doc.file_type?.toUpperCase() || "FILE"}</span>
-                          <span>{new Date(doc.created_at).toLocaleDateString("de-DE")}</span>
-                          <span>{(doc.content.length / 1024).toFixed(1)} KB</span>
+                        <div>
+                          <span className="font-semibold text-slate-900">{doc.title}</span>
+                          <div className="flex items-center gap-2 mt-1 text-sm text-slate-500">
+                            <span>{new Date(doc.created_at).toLocaleDateString("de-DE")}</span>
+                            <span>•</span>
+                            <span>{(doc.content?.length / 1024).toFixed(1)} KB</span>
+                          </div>
                         </div>
                       </div>
                       <Button
@@ -361,9 +460,9 @@ export function RAGInterface() {
                         className="text-red-600 hover:bg-red-50 hover:text-red-700"
                       >
                         {deletingId === doc.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <Loader2 className="h-5 w-5 animate-spin" />
                         ) : (
-                          <Trash2 className="h-4 w-4" />
+                          <Trash2 className="h-5 w-5" />
                         )}
                       </Button>
                     </div>

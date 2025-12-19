@@ -1,103 +1,131 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { generateEmbedding } from "@/lib/rag/embeddings"
-import { generateText } from "ai"
 
 export const runtime = "nodejs"
 
 export async function POST(request: NextRequest) {
-  try {
-    console.log("[v0] Query route called")
+  console.log("[v0] === QUERY START ===")
 
-    const body = await request.json()
-    const { question } = body
+  try {
+    const { question } = await request.json()
+    console.log("[v0] Question:", question)
 
     if (!question) {
       return NextResponse.json({ error: "Frage ist erforderlich" }, { status: 400 })
     }
 
-    console.log("[v0] Question:", question)
+    // Step 1: Generate embedding for the question
+    console.log("[v0] Generating question embedding...")
+    const embeddingResponse = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: question,
+      }),
+    })
 
+    if (!embeddingResponse.ok) {
+      throw new Error("Failed to generate question embedding")
+    }
+
+    const embeddingData = await embeddingResponse.json()
+    const questionEmbedding = embeddingData.data[0].embedding
+    console.log("[v0] Question embedding generated")
+
+    // Step 2: Search for similar chunks using pgvector
+    console.log("[v0] Searching similar chunks...")
     const supabase = await createClient()
 
-    console.log("[v0] Generating embedding for question with OpenAI...")
-    const questionEmbedding = await generateEmbedding(question)
-    console.log("[v0] Question embedding generated (", questionEmbedding.length, "dimensions)")
-
-    console.log("[v0] Searching for similar chunks using pgvector...")
-    const { data: similarChunks, error: searchError } = await supabase.rpc("match_document_chunks", {
+    const { data: chunks, error: searchError } = await supabase.rpc("match_document_chunks", {
       query_embedding: questionEmbedding,
       match_threshold: 0.3,
       match_count: 5,
     })
 
     if (searchError) {
-      console.error("[v0] Vector search error:", searchError)
-      return NextResponse.json({ error: `Vector search failed: ${searchError.message}` }, { status: 500 })
+      console.error("[v0] Search error:", searchError)
+      throw new Error(searchError.message)
     }
 
-    console.log("[v0] Found", similarChunks?.length || 0, "similar chunks")
+    console.log("[v0] Found", chunks?.length || 0, "similar chunks")
 
-    if (!similarChunks || similarChunks.length === 0) {
+    if (!chunks || chunks.length === 0) {
       return NextResponse.json({
-        answer: "Entschuldigung, ich konnte keine relevanten Informationen in den hochgeladenen Dokumenten finden.",
+        answer: "Keine relevanten Informationen gefunden. Bitte laden Sie zuerst Dokumente hoch.",
         sources: [],
       })
     }
 
-    const documentIds = [...new Set(similarChunks.map((chunk: any) => chunk.document_id))]
-    const { data: documents } = await supabase.from("documents").select("id, title").in("id", documentIds)
+    // Step 3: Get document titles for sources
+    const documentIds = [...new Set(chunks.map((c: any) => c.document_id))]
+    const { data: docs } = await supabase.from("documents").select("id, title").in("id", documentIds)
 
-    const documentMap = new Map(documents?.map((doc: any) => [doc.id, doc.title]) || [])
+    const docMap = new Map(docs?.map((d: any) => [d.id, d.title]) || [])
 
-    const context = similarChunks.map((chunk: any) => chunk.chunk_text).join("\n\n")
+    // Step 4: Build context from chunks
+    const context = chunks.map((c: any) => c.chunk_text).join("\n\n---\n\n")
 
-    console.log("[v0] Generating AI answer with GPT-4...")
-    const answer = await generateAnswer(question, context)
-    console.log("[v0] Answer generated")
+    // Step 5: Generate answer using GPT-4
+    console.log("[v0] Generating answer with GPT-4...")
+    const chatResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `Du bist ein hilfreicher Assistent für Dokumentenanalyse. Beantworte Fragen basierend auf dem bereitgestellten Kontext.
 
-    const sourcesWithTitles = similarChunks.map((chunk: any) => ({
-      document_title: documentMap.get(chunk.document_id) || "Unbekanntes Dokument",
-      chunk_text: chunk.chunk_text.slice(0, 200) + "...",
-      similarity: chunk.similarity,
+WICHTIGE REGELN:
+1. Beantworte die Frage präzise und vollständig basierend auf dem Kontext
+2. Wenn die genaue Antwort nicht im Kontext steht, gib relevante Informationen aus dem verfügbaren Material
+3. Sei spezifisch und strukturiere deine Antwort klar
+4. Wenn du Informationen zitierst, erwähne aus welchem Teil des Dokuments sie stammen
+5. Bei Lebensläufen: Hebe wichtige Qualifikationen, Erfahrungen und Fähigkeiten hervor
+
+Kontext aus den Dokumenten:
+${context}`,
+          },
+          {
+            role: "user",
+            content: question,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 1500,
+      }),
+    })
+
+    if (!chatResponse.ok) {
+      throw new Error("Failed to generate answer")
+    }
+
+    const chatData = await chatResponse.json()
+    const answer = chatData.choices[0].message.content
+
+    console.log("[v0] === QUERY COMPLETE ===")
+
+    // Build sources with document titles
+    const sources = chunks.map((c: any) => ({
+      document_title: docMap.get(c.document_id) || "Unbekannt",
+      chunk_text: c.chunk_text.slice(0, 200) + "...",
+      similarity: Math.round((c.similarity || 0) * 100) + "%",
     }))
 
-    return NextResponse.json({
-      answer,
-      sources: sourcesWithTitles,
-    })
+    return NextResponse.json({ answer, sources })
   } catch (error) {
     console.error("[v0] Query error:", error)
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Fehler bei der Abfrage" },
+      { error: error instanceof Error ? error.message : "Abfrage fehlgeschlagen" },
       { status: 500 },
     )
-  }
-}
-
-async function generateAnswer(question: string, context: string): Promise<string> {
-  try {
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
-      prompt: `Du bist ein hilfreicher AI-Assistent für Dokumentenanalyse. Beantworte die folgende Frage basierend AUSSCHLIESSLICH auf dem gegebenen Kontext aus den hochgeladenen Dokumenten.
-
-Wichtige Regeln:
-- Antworte NUR auf Basis der bereitgestellten Informationen
-- Wenn die Antwort nicht im Kontext steht, sage das ehrlich
-- Gebe klare, präzise Antworten auf Deutsch
-- Zitiere relevante Stellen wenn passend
-
-Kontext aus Dokumenten:
-${context}
-
-Frage: ${question}
-
-Antwort:`,
-    })
-
-    return text
-  } catch (error) {
-    console.error("[v0] AI generation error:", error)
-    throw new Error(`Failed to generate answer: ${error instanceof Error ? error.message : "Unknown error"}`)
   }
 }
