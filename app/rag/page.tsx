@@ -1,8 +1,10 @@
-import { Suspense } from "react"
-import { RAGInterface } from "@/components/rag-interface"
-import { DocumentList } from "@/components/document-list"
+import { Suspense } from 'react'
+import { RAGInterface } from '@/components/rag-interface'
+import { DocumentList } from '@/components/document-list'
 
-export default function Home() {
+export const metadata = { title: 'RAG Knowledge System' }
+
+export default function RAGHome() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
       <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">

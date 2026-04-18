@@ -1,18 +1,14 @@
 import type React from "react"
 import type { Metadata } from "next"
-import { Geist, Geist_Mono } from "next/font/google"
 import { Analytics } from "@vercel/analytics/next"
 import "./globals.css"
 
-const _geist = Geist({ subsets: ["latin"] })
-const _geistMono = Geist_Mono({ subsets: ["latin"] })
-
 export const metadata: Metadata = {
-  title: "RAG Knowledge System | Next.js + Supabase",
+  title: "Omarska Marketplace | Domaći proizvodi i seoski turizam",
   description:
-    "Ein intelligentes Retrieval-Augmented-Generation System zum Hochladen von Dokumenten und intelligenten Fragen stellen mit KI-gestützten Antworten.",
+    "Marketplace koji povezuje mještane Omarske sa dijasporom. Domaći proizvodi (med, rakija, sir, ajvar) i seoska domaćinstva direktno od ljudi koji ih prave.",
   generator: "v0.app",
-  keywords: ["RAG", "AI", "Knowledge Base", "Next.js", "Supabase", "Vector Search"],
+  keywords: ["Omarska", "marketplace", "BiH", "dijaspora", "domaći proizvodi", "seoski turizam"],
   icons: {
     icon: [
       {
@@ -38,7 +34,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="de">
+    <html lang="bs">
       <body className={`font-sans antialiased`}>
         {children}
         <Analytics />
